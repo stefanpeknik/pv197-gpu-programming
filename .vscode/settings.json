@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "grammar": "plaintext",
+        "kernel_CPU.C": "cpp"
+    }
+}
