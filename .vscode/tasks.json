@@ -4,8 +4,14 @@
         {
             "type": "shell",
             "label": "Build CUDA Project",
-            "command": "make",
-            "args": [],
+            "command": "nvcc",
+            "args": [
+                "-g",
+                "-G",
+                "-o",
+                "framework",
+                "${workspaceFolder}/framework.cu"
+            ],
             "group": {
                 "kind": "build",
                 "isDefault": true
