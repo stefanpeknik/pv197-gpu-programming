@@ -38,18 +38,19 @@ def calculate_distribution(X, Y):
 
 
 # Example usage
-X = 128  # Number of clients
-Y = 8192  # Number of periods per client
-result = calculate_distribution(X, Y)
+input = [(128, 128), (128, 1024), (128, 8192), (1024, 128), (1024, 1024), (1024, 8192)]
 
-# Display results
-print("Input:")
-print(f"Number of clients: {X}")
-print(f"Number of periods per client: {Y}")
-print("\nResults:")
-print(f"Blocks per client: {result['blocks_per_client']}")
-print(f"Clients per block: {result['clients_per_block']}")
-print(f"Threads per block: {result['threads_per_block']}")
+for X, Y in input:
+    print("\n\n")
+    print(f"Input: {X} clients, {Y} periods")
+    result = calculate_distribution(X, Y)
+
+    # Display results
+    print("\nResults:")
+    print(f"Blocks per client: {result['blocks_per_client']}")
+    print(f"Clients per block: {result['clients_per_block']}")
+    print(f"Threads per block: {result['threads_per_block']}")
+    print(f"Total blocks: {result['total_blocks']}")
 
 
 # clients = 128 * 3

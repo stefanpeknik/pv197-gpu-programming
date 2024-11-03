@@ -147,6 +147,97 @@ __global__ void scan(int *output, int *input, int n, int *sums) {
   output[blockOffset + bi] = temp[bi + bankOffsetB] + input[blockOffset + bi];
 }
 
+__device__ int row_to_col(int index) { return index * gridDim.x + blockIdx.x; }
+
+__global__ void small_scan(int *output, int *input) {
+  // Shared memory for temporary storage
+  extern __shared__ int temp[];
+
+  int n = blockDim.x * 2;
+
+  // Calculate block and thread indices
+  int threadID = threadIdx.x;
+
+  // Calculate indices for the elements this thread will work on
+  int ai = threadID;
+  int bi = threadID + (n / 2);
+
+  // calc offsetted indices for the 2d input array but also for colunms
+  int input_ai = row_to_col(ai);
+  int input_bi = row_to_col(bi);
+
+  // Calculate bank offsets to avoid shared memory bank conflicts
+  int bankOffsetA = CONFLICT_FREE_OFFSET(ai);
+  int bankOffsetB = CONFLICT_FREE_OFFSET(bi);
+
+  // Load input elements into shared memory with bank conflict avoidance
+  temp[ai + bankOffsetA] = input[input_ai];
+  temp[bi + bankOffsetB] = input[input_bi];
+
+  // Offset for the reduction step
+  int offset = 1;
+
+  // Build sum in place up the tree - up-sweep phase
+  for (int d = n >> 1; d > 0; d >>= 1) {
+    // Synchronize threads to ensure all data is loaded
+    __syncthreads();
+    if (threadID < d) {
+      // Calculate indices for the reduction step
+      int ai = offset * (2 * threadID + 1) - 1;
+      int bi = offset * (2 * threadID + 2) - 1;
+
+      // Apply bank offsets
+      ai += CONFLICT_FREE_OFFSET(ai);
+      bi += CONFLICT_FREE_OFFSET(bi);
+
+      // Perform the reduction
+      temp[bi] += temp[ai];
+    }
+    // Double the offset for the next level of the tree
+    offset *= 2;
+  }
+
+  // Synchronize threads before moving to the next phase
+  __syncthreads();
+
+  // Save the total sum of this block to the sums array and clear the last
+  // element
+  if (threadID == 0) {
+    temp[n - 1 + CONFLICT_FREE_OFFSET(n - 1)] = 0;
+  }
+
+  // Traverse down the tree and build the scan - down-sweep phase
+  for (int d = 1; d < n; d *= 2) {
+    // Halve the offset for the next level of the tree
+    offset >>= 1;
+    // Synchronize threads before the next step
+    __syncthreads();
+    if (threadID < d) {
+      // Calculate indices for the scan step
+      int ai = offset * (2 * threadID + 1) - 1;
+      int bi = offset * (2 * threadID + 2) - 1;
+
+      // Apply bank offsets
+      ai += CONFLICT_FREE_OFFSET(ai);
+      bi += CONFLICT_FREE_OFFSET(bi);
+
+      // Perform the scan operation
+      int t = temp[ai];
+      temp[ai] = temp[bi];
+      temp[bi] += t;
+    }
+  }
+
+  // Synchronize threads before writing the output
+  __syncthreads();
+
+  // Write the results to the output array
+  input_ai = row_to_col(ai);
+  input_bi = row_to_col(bi);
+  output[input_ai] = temp[ai + bankOffsetA] + input[input_ai];
+  output[input_bi] = temp[bi + bankOffsetB] + input[input_bi];
+}
+
 /*///////////////////////////////////*/
 
 /*///////////scan funcs//////////////*/
@@ -160,73 +251,67 @@ __global__ void calc_single_client_acc(int *account, int *changes, int clients,
   if (periods <= ELEMENTS_PER_BLOCK) {
     int threads = periods / 2;
     int *sums;
-    cudaMalloc((void **)&sums, sizeof(sums[0])); // TODO remove this
-    scan<<<1, threads, periods * sizeof(int)>>>(account, changes, periods,
-                                                sums);
-    cudaFree(sums);
+    // small scan
   } else {
+    // large scan
   }
 }
 
 void calc_clients_accounts(int *account, int *changes, int clients,
                            int periods) {
+  printf("clients: %d\n", clients);
   int clients_per_block = MAX_THREADS_PER_BLOCK;
-  while (!(clients % clients_per_block == 0 && clients_per_block > 128)) {
+  while (!(clients % clients_per_block == 0 && clients_per_block <= 128)) {
+    printf("clients_per_block: %d\n", clients_per_block);
     clients_per_block -= 2;
   }
+  printf("clients_per_block: %d\n", clients_per_block);
   int blocks = clients / clients_per_block;
+
+  printf("clients_per_block: %d\n", clients_per_block);
+  printf("blocks: %d\n", blocks);
 
   calc_single_client_acc<<<blocks, clients_per_block>>>(account, changes,
                                                         clients, periods);
 }
 
-void calc_accounts(int *account, int *changes, int clients, int periods) {
-  int client_num_of_periods = periods;
-  if (client_num_of_periods > ELEMENTS_PER_BLOCK) {
-    // perform a large scan (meaning more than one block per client)
-    // to distinguish the clients blocks from each other we define 2Dim grid
-    // where the x axis is the client and the y axis is the block
-    int remainder = client_num_of_periods % ELEMENTS_PER_BLOCK;
-    // if we can fit the clients periods exactly in the blocks with max
-    // elements per block
-    int blocks_per_client = client_num_of_periods / ELEMENTS_PER_BLOCK;
-    dim3 numBlocks(clients, blocks_per_client);
-    dim3 threadsPerBlock(ELEMENTS_PER_BLOCK);
-    // else
-    // option 1
-    if (remainder != 0) {
-      // find a number of elements per block (meaning must be <= than
-      // ELEMENTS_PER_BLOCK) that can divide the number of periods that way we
-      // ensure that each block is full and each client has the same number of
-      // blocks
-
-      // find the number of elements per block
-      int elements_per_block = 0;
-      for (int i = ELEMENTS_PER_BLOCK; i > 0; i--) {
-        if (client_num_of_periods % i == 0) {
-          elements_per_block = i;
-          break;
-        }
-      }
-
-      // find the number of blocks per client
-      blocks_per_client = client_num_of_periods / elements_per_block;
-      dim3 numBlocks(clients, blocks_per_client);
-      dim3 threadsPerBlock(elements_per_block);
-    }
-
-    // TODO scan large <<<numBlocks, threadsPerBlock>>>
+void siro(int *account, int *changes, int clients, int periods) {
+  int threads_per_client = periods / 2;
+  int threads_per_block_per_client;
+  if (threads_per_client <= MAX_THREADS_PER_BLOCK) {
+    threads_per_block_per_client = threads_per_client;
   } else {
-    // only need one block to scan each client
-    // so here we use a block for each client and set the number of threads to
-    // the number of periods
-    dim3 numBlocks(clients);
-    dim3 threadsPerBlock(client_num_of_periods);
+    threads_per_block_per_client = MAX_THREADS_PER_BLOCK;
+    while (threads_per_client % threads_per_block_per_client != 0) {
+      threads_per_block_per_client /= 2;
+    }
+  }
+  int blocks_per_client = threads_per_client / threads_per_block_per_client;
+  int blocks = clients * blocks_per_client;
 
-    // TODO scan small <<<numBlocks, threadsPerBlock>>>
+  printf("threads_per_client: %d\n", threads_per_client);
+  printf("threads_per_block_per_client: %d\n", threads_per_block_per_client);
+  printf("blocks_per_client: %d\n", blocks_per_client);
+  printf("blocks: %d\n", blocks);
+
+  if (blocks_per_client == 1) {
+    // small scan
+    small_scan<<<blocks, threads_per_block_per_client,
+                 2 * threads_per_block_per_client * sizeof(int)>>>(account,
+                                                                   changes);
+  } else {
+    // large scan
     int *sums;
-    cudaMalloc((void **)&sums, sizeof(sums[0]));
-    scan<<<numBlocks, threadsPerBlock>>>(account, changes, periods, sums);
+    cudaMalloc((void **)&sums, blocks * sizeof(sums[0]));
+    scan<<<blocks, threads_per_block_per_client,
+           2 * threads_per_block_per_client * sizeof(int)>>>(
+        account, changes, threads_per_block_per_client, sums);
+
+    // scan appropriately sums
+    
+    // add sums to accounts
+
+    cudaFree(sums);
   }
 }
 
@@ -238,26 +323,10 @@ __global__ void copy_first_column(int *output, int *input, int clients,
 }
 
 void solveGPU(int *changes, int *account, int *sum, int clients, int periods) {
-  // copy first collumn of changes to a new array, all is on gpu
-  int *n;
-  cudaMalloc((void **)&n, periods * sizeof(n[0]));
-  copy_first_column<<<1, periods>>>(n, changes, clients, periods);
-  printf("n: ");
-  cp_from_device_and_print(n, periods);
-
-  int *out;
-  cudaMalloc((void **)&out, periods * sizeof(out[0]));
-  cudaMemset(out, 0, periods * sizeof(out[0]));
-
-  int *sums;
-  cudaMalloc((void **)&sums, sizeof(sums[0]));
-  cudaMemset(out, 0, sizeof(out[0]));
-
-  cp_from_device_and_print(out, periods);
-
-  int shared_mem_size = periods * sizeof(int);
-  scan<<<1, periods / 2, shared_mem_size>>>(out, n, periods, sums);
-  cp_from_device_and_print(out, periods);
-  printf("sums: ");
-  cp_from_device_and_print(sums, 1);
+  // calc_clients_accounts(account, changes, clients, periods);
+  siro(account, changes, clients, periods);
+  int *first_column;
+  cudaMalloc((void **)&first_column, periods * sizeof(first_column[0]));
+  copy_first_column<<<1, periods>>>(first_column, account, clients, periods);
+  cp_from_device_and_print(first_column, periods);
 }
