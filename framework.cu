@@ -5,8 +5,8 @@
 // #define CLIENTS 8192
 // #define PERIODS 8192
 
-#define CLIENTS 8192
-#define PERIODS 8192
+#define CLIENTS 2
+#define PERIODS 32
 
 #include "kernel.cu"
 #include "kernel_CPU.C"
@@ -44,7 +44,7 @@ int main(int argc, char **argv) {
   sum_gpu = (int *)malloc(PERIODS * sizeof(sum[0]));
 
   for (int i = 0; i < CLIENTS * PERIODS; i++)
-    changes[i] = int(100.0f * (float)rand() / float(RAND_MAX)) % 10;
+    changes[i] = int(100.0f * (float)rand() / float(RAND_MAX));
 
   // allocate and set device memory
   if (cudaMalloc((void **)&dchanges, CLIENTS * PERIODS * sizeof(dchanges[0])) !=

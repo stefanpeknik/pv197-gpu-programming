@@ -18,8 +18,8 @@ void print_clients(int *two_d, int clients, int periods) {
 }
 
 void solveCPU(int *changes, int *account, int *sum, int clients, int periods) {
-  // printf("changes\n");
-  // print_clients(changes, clients, periods);
+  printf("changes\n");
+  print_clients(changes, clients, periods);
 
   for (int i = 0; i < clients; i++)
     account[i] = changes[i]; // the first change is copied
@@ -31,8 +31,8 @@ void solveCPU(int *changes, int *account, int *sum, int clients, int periods) {
     }
   }
 
-  // printf("account\n");
-  // print_clients(account, clients, periods);
+  printf("account\n");
+  print_clients(account, clients, periods);
 
   for (int j = 0; j < periods; j++) {
     int s = 0;

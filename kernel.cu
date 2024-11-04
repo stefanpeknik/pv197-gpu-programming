@@ -1,49 +1,38 @@
 /**
- * @brief Kernel function to solve the problem on the GPU.
+ * source of info for the prefix sum algorithm:
+ * https://developer.download.nvidia.com/compute/cuda/2_2/sdk/website/projects/scan/doc/scan.pdf
+ * https://github.com/mattdean1/cuda
  *
- * This function is expected to perform computations on the GPU using the
- * provided input data. It processes the changes and updates the account and sum
- * arrays accordingly.
- *
- * @param changes Pointer to an array of changes to be applied. It is a 2D array
- * where each "row" represents a client and each "column" represents a period.
- * Each element represents the change in the account balance for a client in a
- * period.
- * @param account Pointer to an array representing the account balances. It is a
- * 2D array where each "row" represents a client and each "column" represents a
- * period. Each element represents the account balance for a client in a period.
- * @param sum Pointer to an array representing the sum of account balances for
- * each period. It is a 1D array where each element represents the sum of
- * account balances for a period.
- * @param clients The number of clients. It is the number of rows in the
- * changes, account, and sum arrays.
- * @param periods The number of periods. It is the number of columns in the
- * changes, account, and sum arrays.
- *
- * The function does not return any value. It modifies the account and sum
- * arrays in place.
+ * source of info for the reduction algorithm:
+ * https://developer.download.nvidia.com/assets/cuda/files/reduction.pdf
  */
 
-/*/////////////Some consts////////////////*/
+/*///////////// Some consts for scan////////////////*/
 // TODO dicide on specific consts
-#define SHARED_MEMORY_BANKS 32
-#define LOG_MEM_BANKS 5
-#define MAX_THREADS_PER_BLOCK 512
-#define ELEMENTS_PER_BLOCK MAX_THREADS_PER_BLOCK * 2
+#define SCAN_SHARED_MEMORY_BANKS 32
+#define SCAN_LOG_MEM_BANKS 5
+#define SCAN_MAX_THREADS_PER_BLOCK 32
+#define ELEMENTS_PER_BLOCK SCAN_MAX_THREADS_PER_BLOCK * 2
 
 // TODO get more info about this
 // There were two BCAO optimisations in the paper - this one is fastest
-#define CONFLICT_FREE_OFFSET(n) ((n) >> LOG_MEM_BANKS)
+#define SCAN_CONFLICT_FREE_OFFSET(n) ((n) >> SCAN_LOG_MEM_BANKS)
+/*////////////////////////////////////////*/
+
+/*/////////// Some consts for reduction //////////////*/
+#define REDUCE_MAX_THREADS_PER_BLOCK 128
 /*////////////////////////////////////////*/
 
 /*////////////////TODO my stuff///////////*/
-void cp_from_device_and_print(int *d_arr, int length) {
-  int *arr = (int *)malloc(length * sizeof(int));
-  cudaMemcpy(arr, d_arr, length * sizeof(int), cudaMemcpyDeviceToHost);
-  for (int i = 0; i < length; i++) {
-    printf("%d ", arr[i]);
+void cp_from_device_and_print(int *d_arr, int rows, int cols) {
+  int *arr = (int *)malloc(rows * cols * sizeof(int));
+  cudaMemcpy(arr, d_arr, rows * cols * sizeof(int), cudaMemcpyDeviceToHost);
+  for (int i = 0; i < rows; i++) {
+    for (int j = 0; j < cols; j++) {
+      printf("%d ", arr[i * cols + j]);
+    }
+    printf("\n");
   }
-  printf("\n");
   free(arr);
 }
 /*////////////////////////////////////////*/
@@ -78,7 +67,7 @@ __global__ void incr_out_with_incr(int *output, int *incr, int blocks_per_col) {
 
 /*////////////////////////////////////////*/
 
-/*////////cuda prefix sum/////////////////*/
+/*/////// cuda prefix sum /////////////////*/
 
 // Kernel function to perform a large prefix sum (scan) operation
 
@@ -100,8 +89,8 @@ __global__ void small_2d_scan(int *output, int *input) {
   int input_bi = bi * gridDim.x + blockIdx.x;
 
   // Calculate bank offsets to avoid shared memory bank conflicts
-  int bankOffsetA = CONFLICT_FREE_OFFSET(ai);
-  int bankOffsetB = CONFLICT_FREE_OFFSET(bi);
+  int bankOffsetA = SCAN_CONFLICT_FREE_OFFSET(ai);
+  int bankOffsetB = SCAN_CONFLICT_FREE_OFFSET(bi);
 
   // Load input elements into shared memory with bank conflict avoidance
   temp[ai + bankOffsetA] = input[input_ai];
@@ -120,8 +109,8 @@ __global__ void small_2d_scan(int *output, int *input) {
       int bi = offset * (2 * threadID + 2) - 1;
 
       // Apply bank offsets
-      ai += CONFLICT_FREE_OFFSET(ai);
-      bi += CONFLICT_FREE_OFFSET(bi);
+      ai += SCAN_CONFLICT_FREE_OFFSET(ai);
+      bi += SCAN_CONFLICT_FREE_OFFSET(bi);
 
       // Perform the reduction
       temp[bi] += temp[ai];
@@ -136,7 +125,7 @@ __global__ void small_2d_scan(int *output, int *input) {
   // Save the total sum of this block to the sums array and clear the last
   // element
   if (threadID == 0) {
-    temp[n - 1 + CONFLICT_FREE_OFFSET(n - 1)] = 0;
+    temp[n - 1 + SCAN_CONFLICT_FREE_OFFSET(n - 1)] = 0;
   }
 
   // Traverse down the tree and build the scan - down-sweep phase
@@ -151,8 +140,8 @@ __global__ void small_2d_scan(int *output, int *input) {
       int bi = offset * (2 * threadID + 2) - 1;
 
       // Apply bank offsets
-      ai += CONFLICT_FREE_OFFSET(ai);
-      bi += CONFLICT_FREE_OFFSET(bi);
+      ai += SCAN_CONFLICT_FREE_OFFSET(ai);
+      bi += SCAN_CONFLICT_FREE_OFFSET(bi);
 
       // Perform the scan operation
       int t = temp[ai];
@@ -195,8 +184,14 @@ __global__ void large_2d_scan(int *output, int *input, int blocks_per_col,
   int input_bi = (row_offset + bi) * cols + current_col;
 
   // Calculate bank offsets to avoid shared memory bank conflicts
-  int bankOffsetA = CONFLICT_FREE_OFFSET(ai);
-  int bankOffsetB = CONFLICT_FREE_OFFSET(bi);
+  int bankOffsetA = SCAN_CONFLICT_FREE_OFFSET(ai);
+  int bankOffsetB = SCAN_CONFLICT_FREE_OFFSET(bi);
+
+  // TODO remove
+  //  print col, blockincol, threadid, ai, bi, input_ai, input_bi,
+  printf("col: %d, blockincol: %d, threadid: %d, ai: %d, bi: %d, input_ai: %d, "
+         "input_bi: %d\n",
+         current_col, col_blockId, threadID, ai, bi, input_ai, input_bi);
 
   // Load input elements into shared memory with bank conflict avoidance
   temp[ai + bankOffsetA] = input[input_ai];
@@ -215,8 +210,8 @@ __global__ void large_2d_scan(int *output, int *input, int blocks_per_col,
       int bi = offset * (2 * threadID + 2) - 1;
 
       // Apply bank offsets
-      ai += CONFLICT_FREE_OFFSET(ai);
-      bi += CONFLICT_FREE_OFFSET(bi);
+      ai += SCAN_CONFLICT_FREE_OFFSET(ai);
+      bi += SCAN_CONFLICT_FREE_OFFSET(bi);
 
       // Perform the reduction
       temp[bi] += temp[ai];
@@ -232,8 +227,8 @@ __global__ void large_2d_scan(int *output, int *input, int blocks_per_col,
   // element
   if (threadID == 0) {
     int sums_index = col_blockId * cols + current_col;
-    sums[sums_index] = temp[n - 1 + CONFLICT_FREE_OFFSET(n - 1)];
-    temp[n - 1 + CONFLICT_FREE_OFFSET(n - 1)] = 0;
+    sums[sums_index] = temp[n - 1 + SCAN_CONFLICT_FREE_OFFSET(n - 1)];
+    temp[n - 1 + SCAN_CONFLICT_FREE_OFFSET(n - 1)] = 0;
   }
 
   // Traverse down the tree and build the scan - down-sweep phase
@@ -248,8 +243,8 @@ __global__ void large_2d_scan(int *output, int *input, int blocks_per_col,
       int bi = offset * (2 * threadID + 2) - 1;
 
       // Apply bank offsets
-      ai += CONFLICT_FREE_OFFSET(ai);
-      bi += CONFLICT_FREE_OFFSET(bi);
+      ai += SCAN_CONFLICT_FREE_OFFSET(ai);
+      bi += SCAN_CONFLICT_FREE_OFFSET(bi);
 
       // Perform the scan operation
       int t = temp[ai];
@@ -270,17 +265,84 @@ __global__ void large_2d_scan(int *output, int *input, int blocks_per_col,
 
 /*///////////////////////////////////*/
 
-/*///////////scan funcs//////////////*/
+/*/////////// reduction //////////////*/
+
+template <unsigned int blockSize>
+__device__ void warpReduce(volatile int *sdata, unsigned int tid) {
+  if (blockSize >= 64)
+    sdata[tid] += sdata[tid + 32];
+  if (blockSize >= 32)
+    sdata[tid] += sdata[tid + 16];
+  if (blockSize >= 16)
+    sdata[tid] += sdata[tid + 8];
+  if (blockSize >= 8)
+    sdata[tid] += sdata[tid + 4];
+  if (blockSize >= 4)
+    sdata[tid] += sdata[tid + 2];
+  if (blockSize >= 2)
+    sdata[tid] += sdata[tid + 1];
+}
+
+template <unsigned int blockSize>
+__global__ void small_reduce2D(const int *g_idata, int *g_odata, int num_rows,
+                               int num_cols) {
+  extern __shared__ int sdata[];
+  unsigned int tid = threadIdx.x;
+  unsigned int row = blockIdx.y; // Each row gets its own set of blocks
+  unsigned int i = row * num_cols + blockIdx.x * (blockSize * 2) + tid;
+  unsigned int gridSize = blockSize * 2 * gridDim.x;
+
+  // Initialize shared memory
+  sdata[tid] = 0;
+
+  // Load data into shared memory for this block's chunk of the row
+  while (i < (row + 1) * num_cols) {
+    sdata[tid] +=
+        g_idata[i] +
+        (i + blockSize < (row + 1) * num_cols ? g_idata[i + blockSize] : 0);
+    i += gridSize;
+  }
+  __syncthreads();
+
+  // Perform the reduction within the block (similar to reduce6)
+  if (blockSize >= 512) {
+    if (tid < 256)
+      sdata[tid] += sdata[tid + 256];
+    __syncthreads();
+  }
+  if (blockSize >= 256) {
+    if (tid < 128)
+      sdata[tid] += sdata[tid + 128];
+    __syncthreads();
+  }
+  if (blockSize >= 128) {
+    if (tid < 64)
+      sdata[tid] += sdata[tid + 64];
+    __syncthreads();
+  }
+  if (tid < 32)
+    warpReduce<blockSize>(sdata, tid);
+
+  // Store partial results for each row
+  if (tid == 0) {
+    atomicAdd(&g_odata[row],
+              sdata[0]); // Combine partial sums from all blocks of the row
+  }
+}
 
 /*///////////////////////////////////*/
 
 void prefix_sum_2d_arr_per_cols(int *out_2d, int *in_2d, int cols, int rows) {
+  printf("\n\n");
+  printf("scan in_2d: \n");
+  cp_from_device_and_print(in_2d, rows, cols);
+
   int threads_per_col = rows / 2;
   int threads_per_block_per_col;
-  if (threads_per_col <= MAX_THREADS_PER_BLOCK) {
+  if (threads_per_col <= SCAN_MAX_THREADS_PER_BLOCK) {
     threads_per_block_per_col = threads_per_col;
   } else {
-    threads_per_block_per_col = MAX_THREADS_PER_BLOCK;
+    threads_per_block_per_col = SCAN_MAX_THREADS_PER_BLOCK;
     while (threads_per_col % threads_per_block_per_col != 0) {
       threads_per_block_per_col /= 2;
     }
@@ -288,18 +350,19 @@ void prefix_sum_2d_arr_per_cols(int *out_2d, int *in_2d, int cols, int rows) {
   int blocks_per_col = threads_per_col / threads_per_block_per_col;
   int blocks = cols * blocks_per_col;
 
-  // printf("threads_per_col: %d\n", threads_per_col);
-  // printf("threads_per_block_per_col: %d\n", threads_per_block_per_col);
-  // printf("blocks_per_col: %d\n", blocks_per_col);
-  // printf("blocks: %d\n", blocks);
+  printf("threads_per_col: %d\n", threads_per_col);
+  printf("threads_per_block_per_col: %d\n", threads_per_block_per_col);
+  printf("blocks_per_col: %d\n", blocks_per_col);
+  printf("blocks: %d\n", blocks);
 
   if (blocks_per_col == 1) {
-
+    printf("small scan");
     // small scan
     small_2d_scan<<<blocks, threads_per_block_per_col,
                     2 * threads_per_block_per_col * sizeof(int)>>>(out_2d,
                                                                    in_2d);
   } else {
+    printf("large scan");
 
     int *sums, *incr;
     cudaMalloc((void **)&sums, blocks * sizeof(sums[0]));
@@ -310,27 +373,71 @@ void prefix_sum_2d_arr_per_cols(int *out_2d, int *in_2d, int cols, int rows) {
                     2 * threads_per_block_per_col * sizeof(int)>>>(
         out_2d, in_2d, blocks_per_col, sums);
 
-    // printf("out2d in between: ");
-    // cp_from_device_and_print(out_2d, cols * rows);
+    printf("out2d in between: \n");
+    cp_from_device_and_print(out_2d, rows, cols);
 
-    // printf("sums: ");
-    // cp_from_device_and_print(sums, blocks);
+    printf("sums: \n");
+    cp_from_device_and_print(sums, 1, blocks);
 
     // scan appropriately sums
     prefix_sum_2d_arr_per_cols(incr, sums, cols, blocks_per_col);
 
-    // printf("incr: ");
-    // cp_from_device_and_print(incr, blocks);
+    printf("incr: \n");
+    cp_from_device_and_print(incr, 1, blocks);
 
     // add sums to out_2d
     incr_out_with_incr<<<blocks, threads_per_block_per_col * 2>>>(
         out_2d, incr, blocks_per_col);
 
-    // printf("out_2d: \n");
-    // cp_from_device_and_print(out_2d, cols * rows);
+    printf("out_2d: \n");
+    cp_from_device_and_print(out_2d, rows, cols);
 
     cudaFree(sums);
     cudaFree(incr);
+  }
+}
+
+void reduce_2d_arr(int *out, int *in_2d, int cols, int rows) {
+  int threads_per_row = cols / 2;
+  unsigned int threads_per_block_per_row;
+  if (threads_per_row <= REDUCE_MAX_THREADS_PER_BLOCK) {
+    threads_per_block_per_row = threads_per_row;
+  } else {
+    threads_per_block_per_row = REDUCE_MAX_THREADS_PER_BLOCK;
+    while (threads_per_row % threads_per_block_per_row != 0) {
+      threads_per_block_per_row /= 2;
+    }
+  }
+
+  int blocks_per_row = threads_per_row / threads_per_block_per_row;
+  int blocks = rows * blocks_per_row;
+
+  dim3 grid(blocks_per_row, rows); // 2D grid: (blocks per row, number of rows)
+  dim3 block(
+      threads_per_block_per_row); // 1D block with calculated threads per block
+
+  // Calculate shared memory size per block
+  int shared_mem_size = threads_per_block_per_row * sizeof(int);
+
+  if (blocks_per_row == 1) {
+    printf("small reduce");
+    // small reduce
+    small_reduce2D<REDUCE_MAX_THREADS_PER_BLOCK>
+        <<<grid, block, shared_mem_size>>>(in_2d, out, rows, cols);
+  } else {
+    // TODO not working
+
+    printf("large reduce");
+    // large reduce
+    int *sums;
+    cudaMalloc((void **)&sums, blocks * sizeof(sums[0]));
+
+    small_reduce2D<SCAN_MAX_THREADS_PER_BLOCK>
+        <<<grid, block, shared_mem_size>>>(in_2d, sums, rows, cols);
+
+    reduce_2d_arr(out, sums, blocks_per_row, rows);
+
+    cudaFree(sums);
   }
 }
 
@@ -345,4 +452,10 @@ void solveGPU(int *changes, int *account, int *sum, int clients, int periods) {
 
   // calc_clients_accounts(account, changes, clients, periods);
   prefix_sum_2d_arr_per_cols(account, changes, clients, periods);
+
+  // if cudalast error print the error
+  cudaError_t error = cudaGetLastError();
+  if (error != cudaSuccess) {
+    fprintf(stderr, "CUDA error: %s\n", cudaGetErrorString(error));
+  }
 }
