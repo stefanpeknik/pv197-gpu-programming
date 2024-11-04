@@ -5,8 +5,8 @@
 // #define CLIENTS 8192
 // #define PERIODS 8192
 
-#define CLIENTS 2
-#define PERIODS 32
+#define CLIENTS 8192
+#define PERIODS 8192
 
 #include "kernel.cu"
 #include "kernel_CPU.C"
