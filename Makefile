@@ -4,7 +4,7 @@
 NVCC = nvcc
 
 # Compiler flags
-CFLAGS = -g -G
+CFLAGS = -g -G -lineinfo
 
 # Target executable
 TARGET = framework
