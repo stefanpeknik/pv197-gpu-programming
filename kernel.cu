@@ -207,11 +207,11 @@ __global__ void reduce_temp(int *account, int *sum, int clients, int periods) {
 void solveGPU(int *changes, int *account, int *sum, int clients, int periods) {
   prefix_sum_2d_per_col(changes, account, clients, periods);
 
-  reduce_2d_per_row(account, sum, clients, periods);
+  // reduce_2d_per_row(account, sum, clients, periods);
 
-  // dim3 sumBlocks(periods / REDUCE_THREADS_PER_BLOCK);
-  // reduce_temp<<<sumBlocks, REDUCE_THREADS_PER_BLOCK>>>(account, sum, clients,
-  //                                                      periods);
+  dim3 sumBlocks(periods / REDUCE_THREADS_PER_BLOCK);
+  reduce_temp<<<sumBlocks, REDUCE_THREADS_PER_BLOCK>>>(account, sum, clients,
+                                                       periods);
 
   cudaError_t error = cudaGetLastError();
   if (error != cudaSuccess) {
