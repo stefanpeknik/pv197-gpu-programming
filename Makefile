@@ -6,29 +6,39 @@ NVCC = nvcc
 # Compiler flags
 CFLAGS = -g -G
 
+
 # Target executable
 TARGET = framework
 
 # Source files
 SRCS = framework.cu
 
-FILES = framework.cu kernel.cu kernel_CPU.C
+FILES = framework.cu kernel.cu kernel_CPU.C Makefile
 
 # Default target
 all: $(TARGET)
 
-run: $(TARGET)
+run: clean $(TARGET)
+	./$(TARGET)
 	./$(TARGET)
 
-airacuda:
-	scp $(FILES) airacuda:/home/u524810/gpu/
-	ssh airacuda 'cd /home/u524810/gpu/ && make clean'
-	ssh airacuda 'cd /home/u524810/gpu/ && make run'
+release: clean $(TARGET)_release
+	./$(TARGET)
+	./$(TARGET)
 
+airacuda-cp:
+	scp $(FILES) airacuda:/home/u524810/gpu/
+
+barracuda-cp:
+	scp $(FILES) barracuda:/home/u524810/gpu/
 
 # Build target
 $(TARGET): $(SRCS)
 	$(NVCC) $(CFLAGS) -o $(TARGET) $(SRCS)
+
+# Build release target
+$(TARGET)_release: $(SRCS)
+	$(NVCC) -o $(TARGET) $(SRCS)
 
 # Clean target
 clean:

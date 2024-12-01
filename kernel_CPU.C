@@ -9,7 +9,7 @@ void print_array(int *array, int size) {
 
 void print_clients(int *two_d, int clients, int periods) {
   for (int c = 0; c < clients; c++) {
-    printf("Client %d\n", c);
+    printf("Client %d: ", c);
     for (int p = 0; p < periods; p++) {
       printf("%d ", two_d[p * clients + c]);
     }
@@ -49,6 +49,6 @@ void solveCPU(int *changes, int *account, int *sum, int clients, int periods) {
     sum[j] = s;
   }
 
-  // printf("sum\n");
-  // print_sum(sum, periods);
+  printf("sum\n");
+  print_sum(sum, periods);
 }
